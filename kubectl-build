@@ -11,8 +11,43 @@ for d in jq spruce kubectl python envsubst; do which "$d" >/dev/null || {
   exit 1
 }; done
 
+
 # Configure the manifest file we'll be looking for.
 ASSEMBLY_FILE="assemble.yml"
+
+# Help...
+if [[ $# -eq 0 ]]; then
+  cat <<EOF
+Usage: kubectl build <path>... | kubectl apply -f -
+
+Assemble and configure yaml manifests from \`${ASSEMBLY_FILE}\` files.
+
+resources:                           # resources specify yaml files to combine
+                                     # into a single yaml output stream.
+- path/to/file.yml                   # explicitly include a file
+- path/to/bare/directory             # collect all yml files within
+- path/to/assemble/directory         # when ${ASSEMBLY_FILE} in root, process it
+
+vars:                                # vars specify variables that can be
+                                     # overridden by environment variables.
+- name: CLUSTER_HOST                 # name is the variable name
+  value: test.com                    # value is an inline value for the var
+  valueFromFile: path/to/file        # valueFromFile is an external file that
+                                     # contains the desired value. valueFromFile
+                                     # trumps value.
+
+patches:                             # patches specify "indirect" modifications
+                                     # to resources included in this file
+- target:                            # start patch, every resource included will be compared
+    kind: Service                    # against the keys under the target. target must be
+    metadata:                        # specified fully enough to match eactly one manifest.
+      name: my-service               # any keys/values can be used for matching.
+  replacements:                      # start list of changes to make to manifest
+  - path: spec.virtualhost.fqdn      # a json path string that points to the
+                                     # field to modify
+    value: service.\${CLUSTER_HOST}   # the value to insert
+EOF
+fi
 
 # Assemble collects yaml manifests enumerated in an "assembly" file, applies
 # patches defined within and streams the modified results to standard out.
