@@ -1,0 +1,14 @@
+resources:
+- grafana
+- prometheus
+vars:
+- name: TEST
+  value: set-in-monitoring
+patches:
+- target:
+    kind: Service
+    metadata:
+      name: grafana
+  replacements:
+  - path: metadata.test
+    value: ${TEST}

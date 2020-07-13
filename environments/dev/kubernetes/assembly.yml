@@ -7,6 +7,8 @@ vars:
   value: master
 - name: CLUSTER_HOST
   valueFromFile: ../config/domain
+- name: TEST        # only here to validate that the assemble file in the
+  value: set-in-dev # monitoring folder is not affected by this.
 patches:
 - target:
     kind: HTTPProxy
