@@ -1,0 +1,60 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: concourse-worker
+  namespace: ci
+  labels:
+    app: concourse-worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: concourse-worker
+  template:
+    metadata:
+      labels:
+        app: concourse-worker
+    spec:
+      automountServiceAccountToken: false
+      nodeSelector:
+        role: worker
+      volumes:
+      - name: secret-volume
+        secret:
+          secretName: worker-secret
+      - name: workdir
+        emptyDir: {}
+      containers:
+      - name: concourse-worker
+        image: concourse/concourse:6.1.0
+        command:
+        - /usr/local/concourse/bin/concourse
+        - worker
+        securityContext:
+          privileged: true
+        ports:
+        - containerPort: 7777
+          name: garden
+        - containerPort: 7788
+          name: baggageclaim
+        - containerPort: 7799
+          name: garbage
+        volumeMounts:
+        - name: secret-volume
+          readOnly: true
+          mountPath: /etc/secret-volume
+        - name: workdir
+          mountPath: /work
+        env:
+        - name: CONCOURSE_EPHEMERAL
+          value: "true"
+        - name: CONCOURSE_WORK_DIR
+          value: /work
+        - name: CONCOURSE_TSA_HOST
+          value: concourse-web:2222
+        - name: CONCOURSE_TSA_PUBLIC_KEY
+          value: /etc/secret-volume/tsa_host_key.pub
+        - name: CONCOURSE_TSA_WORKER_PRIVATE_KEY
+          value: /etc/secret-volume/worker_key
+        - name: CONCOURSE_RESOURCE_CHECKING_INTERVAL
+          value: 10s

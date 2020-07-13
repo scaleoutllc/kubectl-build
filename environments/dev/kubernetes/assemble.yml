@@ -1,0 +1,31 @@
+resources:
+- bootstrap.yml
+- ../../../kubernetes/concourse
+- ../../../kubernetes/monitoring
+vars:
+- name: NAMESPACE
+  value: master
+- name: CLUSTER_HOST
+  valueFromFile: ../config/domain
+patches:
+- target:
+    kind: HTTPProxy
+    metadata:
+      name: concourse-web
+  replacements:
+  - path: spec.virtualhost.fqdn
+    value: concourse.${CLUSTER_HOST}
+- target:
+    kind: HTTPProxy
+    metadata:
+      name: grafana
+  replacements:
+  - path: spec.virtualhost.fqdn
+    value: grafana.${CLUSTER_HOST}
+- target:
+    kind: HTTPProxy
+    metadata:
+      name: prometheus
+  replacements:
+  - path: spec.virtualhost.fqdn
+    value: prometheus.${CLUSTER_HOST}

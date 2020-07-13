@@ -1,0 +1,86 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: concourse-web
+  namespace: ci
+  labels:
+    app: concourse-web
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: concourse-web
+  template:
+    metadata:
+      labels:
+        app: concourse-web
+    spec:
+      serviceAccountName: secret-access
+      nodeSelector:
+        role: worker
+      volumes:
+      - name: secret-volume
+        secret:
+          secretName: web-secret
+      containers:
+      - name: concourse-web
+        image: concourse/concourse:6.1.0
+        command:
+        - /usr/local/concourse/bin/concourse
+        - web
+        ports:
+        - containerPort: 8080
+          name: http
+        - containerPort: 2222
+          name: tsa
+        volumeMounts:
+        - name: secret-volume
+          readOnly: true
+          mountPath: /etc/secret-volume
+        env:
+        - name: CONCOURSE_CLUSTER_NAME
+          value: scaleoutllc-training
+        - name: CONCOURSE_ADD_LOCAL_USER
+          valueFrom:
+            secretKeyRef:
+              name: ci-basic-auth
+              key: user_pass
+        - name: CONCOURSE_MAIN_TEAM_LOCAL_USER
+          valueFrom:
+            secretKeyRef:
+              name: ci-basic-auth
+              key: user
+        - name: CONCOURSE_SESSION_SIGNING_KEY
+          value: /etc/secret-volume/session_signing_key
+        - name: CONCOURSE_TSA_HOST_KEY
+          value: /etc/secret-volume/tsa_host_key
+        - name: CONCOURSE_TSA_AUTHORIZED_KEYS
+          value: /etc/secret-volume/worker_key.pub
+        - name: CONCOURSE_EXTERNAL_URL
+          value: http://${CLUSTER_HOSTNAME}
+        - name: CONCOURSE_X_FRAME_OPTIONS
+          value: deny
+        - name: CONCOURSE_POSTGRES_HOST
+          value: postgres
+        - name: CONCOURSE_POSTGRES_PORT
+          value: "5432"
+        - name: CONCOURSE_POSTGRES_DATABASE
+          value: atc
+        - name: CONCOURSE_POSTGRES_USER
+          valueFrom:
+            secretKeyRef:
+              name: ci-basic-auth
+              key: user
+        - name: CONCOURSE_POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: ci-basic-auth
+              key: pass
+        - name: CONCOURSE_LOG_LEVEL
+          value: debug
+        - name: CONCOURSE_KUBERNETES_IN_CLUSTER
+          value: "true"
+        - name: CONCOURSE_KUBERNETES_NAMESPACE_PREFIX
+          value: ci-secrets-
+        - name: CONCOURSE_RESOURCE_CHECKING_INTERVAL
+          value: 10s

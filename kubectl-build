@@ -1,0 +1,144 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# A quick and dirty k8s configuration management tool.
+# TODO:
+#   - Add more robust replacements that can modify existing values.
+#   - Rewrite in golang when POC is complete.
+
+# Ensure the required dependencies are installed.
+for d in jq spruce kubectl python envsubst; do which "$d" >/dev/null || {
+  echo "not installed: $d"
+  exit 1
+}; done
+
+# Configure the manifest file we'll be looking for.
+ASSEMBLY_FILE="assemble.yml"
+
+# Assemble collects yaml manifests enumerated in an "assembly" file, applies
+# patches defined within and streams the modified results to standard out.
+function assemble() {
+  # Save the directory that was used when this was invoked.
+  local root=${1}
+  # Save a path to the config file that may exist in the supplied directory.
+  local configFile=${root}/${ASSEMBLY_FILE}
+  # Attempt to read the configuration file. If it doesn't exist, this fails with
+  # a clear error message.
+  local config=$(spruce json < ${configFile})
+  # Attempt to load environment variables so configFile can be re-parsed to
+  # replace them.
+  local vars=$(echo "${config}" | jq -cr '.vars[]')
+  if [[ "${vars}" != "" ]]; then
+    # Iterate through each variable, setting it if it isn't already provided in
+    # the environment.
+    for var in ${vars}; do
+      name=$(jq -r '.name' <<<"${var}")
+      # This insane garbage determines if the variable is set in the environment
+      # already.
+      if ! compgen -e -X "!$name" > /dev/null; then
+        # if it is not, first, try to get the value from an external file
+        valueFromFile=$(jq -rc '.valueFromFile' <<<"${var}")
+        if [[ "${valueFromFile}" != "null" ]]; then
+          value=$(cat ${root}/${valueFromFile})
+        fi
+        if [[ "${value:-}" == "" ]]; then
+          value=$(jq -r '.value' <<<"${var}")
+        fi
+        eval export ${name}="${value}" > /dev/null
+      fi
+    done
+    config=$(envsubst <<<"${config}")
+  fi
+  # Save the resources enumerated in the assembly file, one per line.
+  local resources=$(echo "${config}" | jq -cre '.resources[]')
+  # Save the patches enumerated in the assembly file, one per line.
+  local patches=$(echo "${config}" | jq -cr '.patches[]' 2>/dev/null)
+  # Read all specified resources.
+  manifests=$(
+    cd ${root}
+    for item in ${resources}; do
+      if [[ -f "${item}/${ASSEMBLY_FILE}" ]]; then
+        # If a resource points to a directory that contains an assembly file,
+        # run assembly on it and collect the output. This is recursive and can
+        # be nested as deeply as needed.
+        assemble "${root}/${item}"
+      else
+        # If the resource pointed to does not contain an assembly file, collect
+        # the raw file pointed to or, in the case of a directory, every file
+        # that has a .yml extension.
+        collect "${root}/${item}"
+      fi
+    done
+  )
+  if [[ "${patches}" == "" ]]; then
+    # If the assembly file does not specify any patches, output all collected
+    # manifests immediately.
+    echo "${manifests}"
+  else
+    # Iterate through each patch, applying it to the desired target.
+    for patch in ${patches}; do
+      # Collect the target for the patch, this will be used to filter manifests
+      # to find the one that should be modified.
+      filter=$(echo "${patch}" | jq -rc '.target')
+      # Collect the matching manifest based on the target provided.
+      matched=$(echo "${manifests}" | jq -c 'select(contains('${filter}'))')
+      # Check the number of manifests that matched the target.
+      matchCount=$(echo "${matched}" | wc -l)
+      # A patch can only target a single manifest (currently). If none or more
+      # than one are found, error and exit.
+      if [[ ${matchCount} != 1 ]]; then
+        echo "Patch target in ${configFile} found ${matchCount} matches, wanted 1."
+        echo "${matched}" | jq -c
+        exit 1
+      fi
+      # Produce a JQ expression that can apply the replacements.
+      replacements=$(echo "${patch}" | jq -r '.replacements | map("."+(.path)+" = "+(.value|tojson)) | join(" | ")')
+      # Overwrite the manifest listing with the matched/modified manifests and
+      # all unmatched manifests. The next loop through will do the same.
+      manifests=$(
+        echo "${manifests}" | jq -c 'select(contains('${filter}') | not)'
+        echo "${matched}" | jq -c ". | ${replacements}"
+      )
+    done
+    # When work is complete, convert manifests back to yaml for ease of reading.
+    for manifest in ${manifests}; do
+      json2yaml <<<"${manifest}"
+      echo "---"
+    done
+  fi
+}
+
+# collect takes he path to a file or a directory and produces jsonl output, one
+# line for each manifest referenced.
+function collect() {
+  local target=${1}
+  if [[ -d "${target}" ]]; then
+    for file in $(find ${target} -type f -name "*.yml"); do
+      expand "${file}"
+    done
+  else
+    expand "${target}"
+  fi
+}
+
+# expand converts a yaml file to json, splitting composite documents on ---.
+function expand() {
+  if ! grep -q -- "---" ${1}; then
+    spruce json ${1}
+  else
+    cat ${1} | while read -d'---' manifest || [[ -n $manifest ]]; do
+      if [[ "${manifest}" != "" ]]; then
+        echo "${manifest}" | spruce json
+      fi
+    done
+  fi
+}
+
+# json2yaml converts json back to yaml.
+function json2yaml {
+  python -c 'import sys, yaml, json; print(yaml.dump(json.loads(sys.stdin.read())))'
+}
+
+# Try to run assemble on every provided path.
+for dir in $*; do
+  assemble ${PWD}/${dir}
+done
