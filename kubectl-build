@@ -189,7 +189,7 @@ function patch() {
     fi
     # Check the number of manifests that matched the target.
     local matchCount
-    matchCount=$(echo "${matched}" | sed '/^\s*$/d' | wc -l)
+    matchCount=$(echo "${matched}" | grep -v ^$ | wc -l | tr -d "[:space:]")
     # A patch can only target a single manifest (currently). If none or more
     # than one are found, error and exit.
     if [[ ${matchCount} != 1 ]]; then
