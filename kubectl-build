@@ -6,7 +6,7 @@ set -euo pipefail
 #   - Rewrite in golang when POC is complete.
 
 # Ensure the required dependencies are installed.
-for d in jq spruce kubectl python envsubst; do which "$d" >/dev/null || {
+for d in jq yq kubectl envsubst; do which "$d" >/dev/null || {
   echo "not installed: $d"
   exit 1
 }; done
@@ -59,7 +59,7 @@ function assembly() {
   local config=$(
     # Do variable substitutions in a subshell so vars in one assembly do not
     # affect nested assemblys.
-    local rawConfig=$(spruce json <${configFile})
+    local rawConfig=$(yq r -j ${configFile})
     # Attempt to load vars so configFile can be re-parsed to replace them.
     local vars=$(echo "${rawConfig}" | jq -cr '.vars[]')
     if [[ "${vars}" != "" ]]; then
@@ -159,25 +159,21 @@ function collect() {
 # expand converts a yaml file to json, splitting composite documents on ---.
 function expand() {
   if ! grep -q -- "---" ${1}; then
-    spruce json ${1}
+    yq r -j ${1}
   else
     cat ${1} | while read -d'---' manifest || [[ -n $manifest ]]; do
       if [[ "${manifest}" != "" ]]; then
-        echo "${manifest}" | spruce json
+        echo "${manifest}" | yq r -j -
       fi
     done
   fi
 }
 
-# json2yaml converts json back to yaml.
-function json2yaml() {
-  python -c 'import sys, yaml, json; print(yaml.dump(json.loads(sys.stdin.read())).rstrip())'
-}
 
 # Try to run assembly on every provided path.
 for dir in $*; do
   while read -r manifest; do
-     json2yaml <<<"${manifest}"
+     yq r -P - <<<"${manifest}"
      echo "---"
   done <<<"$(assembly ${PWD}/${dir})"
 done
