@@ -15,8 +15,14 @@ for d in jq yq kubectl envsubst; do which "$d" >/dev/null || {
 # Configure the manifest file we'll be looking for.
 ASSEMBLY_FILE="assembly.yml"
 
-# Help...
-if [[ $# -eq 0 ]]; then
+# Create temporary file to hold errors that may occur in subshells.
+ERRORS=$(mktemp)
+function error { echo "${@}" >> ${ERRORS}; }
+trap "exit 1" HUP INT PIPE QUIT TERM
+trap 'rm -rf "$ERRORS"' EXIT
+# ^ delete temp file after the program exits
+
+function usage {
   cat <<EOF
 Usage: kubectl build <path>... | kubectl apply -f -
 
@@ -46,121 +52,174 @@ patches:                             # patches specify "indirect" modifications
   - path: spec.virtualhost.fqdn      # json path pointing to the field to modify
     value: service.\${CLUSTER_HOST}   # the value to insert
 EOF
-fi
+}
 
-# Assembly collects yaml manifests enumerated in an "assembly" file, applies
+# getConfig takes a path to a yaml encoded assembly file and echos it to stdout
+# as a single json line with all variables in the config / environment applied.
+function getConfig() {
+  local configFile="${1}"
+  local rawConfig
+  if ! rawConfig=$(yq r -j "${configFile}"); then
+    error "parsing: ${configFile}"
+    return 1
+  fi
+  # Get any vars defined (not required to be present, failures okay)
+  local vars; vars=$(echo "${rawConfig}" | jq -cr '.vars[]' 2> /dev/null)
+  if [[ "${vars}" != "" ]]; then
+    # Iterate through each variable, setting if it isn't already provided in
+    # the environment.
+    for var in ${vars}; do
+      # Extract variable name.
+      local varName
+      if ! varName=$(jq -re '.name' <<<"${var}"); then
+        error "${configFile}: vars: ${var} has no name."
+        return 1
+      fi
+      # This insane garbage determines if the variable is set in the
+      # environment already.
+      if ! compgen -e -X "!$varName" >/dev/null; then
+        local value
+        local varFromFile
+        # If var is not set in environment, see if there is a value expected in
+        # an external file
+        if valueFromFile=$(jq -rec '.valueFromFile' <<<"${var}"); then
+          # Try to read external file and fail with useful error if it does not
+          # work.
+          if ! value=$(cat ${root}/${valueFromFile}); then
+            error "${configFile}: vars: ${var}"
+            return 1
+          fi
+        elif ! value=$(jq -re '.value' <<<"${var}"); then
+          # If there was no external file referenced, see if there was an inline
+          # variable value specified.
+          error "${configFile}: vars: ${var} unable to determine value"
+          return 1
+        fi
+        # Export value so envsubst will see it.
+        eval export ${varName}="${value}" >/dev/null
+      fi
+    done
+  fi
+  # Rebuild config using supplied variables.
+  envsubst <<<"${rawConfig}"
+}
+
+# assembly collects yaml manifests enumerated in an "assembly" file, applies
 # patches defined within and streams the modified results to standard out.
 function assembly() {
-  # Save the directory that was used when this was invoked.
+  # Save path passed to this function, it is the directory relative to which
+  # resources inside the config are defined.
   local root=${1}
-  # Save a path to the config file that may exist in the supplied directory.
-  local configFile=${root}/${ASSEMBLY_FILE}
-  # Attempt to read the configuration file. If it doesn't exist, this fails with
-  # a clear error message.
-  local config=$(
-    # Do variable substitutions in a subshell so vars in one assembly do not
-    # affect nested assemblys.
-    local rawConfig=$(yq r -j ${configFile})
-    # Attempt to load vars so configFile can be re-parsed to replace them.
-    local vars=$(echo "${rawConfig}" | jq -cr '.vars[]')
-    if [[ "${vars}" != "" ]]; then
-      # Iterate through each variable, setting if it isn't already provided in
-      # the environment.
-      for var in ${vars}; do
-        # Extract variable name.
-        local name=$(jq -r '.name' <<<"${var}")
-        # This insane garbage determines if the variable is set in the
-        # environment already.
-        if ! compgen -e -X "!$name" >/dev/null; then
-          # If var is not set in environment, try to get the value from an
-          # external file
-          valueFromFile=$(jq -rc '.valueFromFile' <<<"${var}")
-          if [[ "${valueFromFile}" != "null" ]]; then
-            # Absent files will cause failures.
-            value=$(cat ${root}/${valueFromFile})
-          fi
-          # If value hasn't been set yet, try to get it from inline declaration.
-          if [[ "${value:-}" == "" ]]; then
-            value=$(jq -re '.value' <<<"${var}")
-          fi
-          # Export value so envsubst will see it.
-          eval export ${name}="${value}" >/dev/null
+  # Attempt to read the assembly file.
+  local config
+  config=$(getConfig "${root}/${ASSEMBLY_FILE}") || return 1
+  # Get any resources are targeted (not required to be present, failures okay).
+  local targets
+  targets=$(echo "${config}" | jq -cr '.resources[]' 2> /dev/null)
+  if [[ "${targets}" != "" ]]; then
+    # Actually collect all resources targetted.
+    local resources
+    resources=$(echo "${targets}" | collect "${root}") || return 1
+    # Get any patches (not required to be present, failures okay).
+    local patches
+    if patches=$(echo "${config}" | jq -cr '.patches[]' 2> /dev/null); then
+      # Apply any found patches to the resources targetted.
+      echo "${patches}" | patch "${resources}" || return 1
+    else
+      # Otherwise, just output resources.
+      echo "${resources}"
+    fi
+  fi
+}
+
+# collect takes a newline separated list resource paths over standard in with
+# the root directory of the paths supplied as the first argument. it outputs
+# the underlying yaml found in each of the files as json.
+function collect() {
+  local root subPath subAssembly
+  root=${1}
+  cd "${root}"
+  while read item; do
+    subPath="${root}/${item}"
+    subAssembly="${item}/${ASSEMBLY_FILE}"
+    if [[ -f "${subAssembly}" ]]; then
+      # If a resource points to a directory that contains an assembly file,
+      # run assembly on it and collect the output. This is recursive and can
+      # be nested as deeply as needed.
+      assembly "${subPath}"
+    else
+      # If the resource pointed to does not contain an assembly file, collect
+      # the raw file pointed to or, in the case of a directory, every file
+      # within that has a .yml extension.
+      for file in $(find ${subPath} -type f -name "*.yml"); do
+        if ! yq r -j -d'*' "${file}"; then
+          error "parsing: ${file}"
+          return 1
         fi
       done
     fi
-    # Rebuild config using supplied environment variables.
-    envsubst <<<"${rawConfig}"
-  )
-  # Save the resources enumerated in the assembly file, one per line.
-  local resources=$(echo "${config}" | jq -cre '.resources[]')
-  # Read all specified resources.
-  manifests=$(
-    cd ${root}
-    for item in ${resources}; do
-      if [[ -f "${item}/${ASSEMBLY_FILE}" ]]; then
-        # If a resource points to a directory that contains an assembly file,
-        # run assembly on it and collect the output. This is recursive and can
-        # be nested as deeply as needed.
-        assembly "${root}/${item}"
-      else
-        # If the resource pointed to does not contain an assembly file, collect
-        # the raw file pointed to or, in the case of a directory, every file
-        # within that has a .yml extension.
-        collect "${root}/${item}"
-      fi
-    done
-  )
-  # Save the patches enumerated in the assembly file, one per line.
-  local patches=$(echo "${config}" | jq -cr '.patches[]' 2>/dev/null)
-  if [[ "${patches}" != "" ]]; then
-    # Iterate through each patch, applying it to the desired target.
-    for patch in ${patches}; do
-      # Collect the target for the patch, this will be used to filter manifests
-      # to find the one that should be modified.
-      filter=$(echo "${patch}" | jq -rc '.target')
-      # Collect the matching manifest based on the target provided.
-      matched=$(echo "${manifests}" | jq -c 'select(contains('${filter}'))')
-      # Check the number of manifests that matched the target.
-      matchCount=$(echo "${matched}" | wc -l)
-      # A patch can only target a single manifest (currently). If none or more
-      # than one are found, error and exit.
-      if [[ ${matchCount} != 1 ]]; then
-        echo "Patch target in ${configFile} found ${matchCount} matches, wanted 1."
-        echo "${matched}" | jq -c
-        exit 1
-      fi
-      # Produce a JQ expression that can apply the replacements.
-      replacements=$(echo "${patch}" | jq -r '.replacements | map("."+(.path)+" = "+(.value|tojson)) | join(" | ")')
-      # Overwrite the manifest listing with modifications supplied, the next
-      # loop through will do the same.
-      manifests=$(
-        # Output any manifest that didn't match.
-        echo "${manifests}" | jq -c 'select(contains('${filter}') | not)'
-        # Output matched manifest with replacements applied.
-        echo "${matched}" | jq -c ". | ${replacements}"
-      )
-    done
-  fi
+  done
+}
+
+# patch receives a newline separated list of json documents (jsonl) and applies
+# patches to matching documents from a manifest of replacements supplied as the
+# first argument. it outputs the results to standard out.
+function patch() {
+  local manifests="${1}"
+  # Iterate through each patch, applying it to the desired target.
+  while read patch; do
+    # Collect the target for the patch, this will be used to filter manifests
+    # to find the one that should be modified.
+    local filter
+    if ! filter=$(echo "${patch}" | jq -ce '.target'); then
+      error "patch: no target: ${patch}"
+      return 1
+    fi
+    # Produce a JQ expression that can apply the replacements.
+    local replacements
+    if ! replacements=$(echo "${patch}" | jq -rc '.replacements | map("."+(.path)+" = "+(.value|tojson)) | join(" | ")'); then
+      error "patch: replacements: ${patch}"
+      return 1
+    fi
+    # Find the matching manifest based on the target provided.
+    local matched
+    if ! matched=$(echo "${manifests}" | jq -c 'select(contains('${filter}'))'); then
+      error "patch: matching failure: ${patch}"
+      return 1
+    fi
+    # Check the number of manifests that matched the target.
+    local matchCount
+    matchCount=$(echo "${matched}" | sed '/^\s*$/d' | wc -l)
+    # A patch can only target a single manifest (currently). If none or more
+    # than one are found, error and exit.
+    if [[ ${matchCount} != 1 ]]; then
+      error "patch: ${patch} matches ${matchCount} resources, wanted 1."
+      return 1
+    fi
+    # Find all unmatched manifests (so they can be saved through each iteration)
+    local unmatched
+    unmatched=$(echo "${manifests}" | jq -c 'select(contains('${filter}') | not)')
+    # Overwrite the manifest listing with modifications supplied, the next
+    # loop through will do the same.
+    manifests="$(echo "${unmatched}" && (echo "${matched}" | jq -c ". | ${replacements}"))"
+  done
   echo "${manifests}"
 }
 
-# collect takes the path to a file or a directory and produces jsonl output, one
-# line for each manifest referenced.
-function collect() {
-  local target=${1}
-  if [[ -d "${target}" ]]; then
-    for file in $(find ${target} -type f -name "*.yml"); do
-       yq r -j -d'*' "${file}"
-    done
-  else
-     yq r -j -d'*' "${target}"
-  fi
-}
+# Show help if no path is defined.
+if [[ $# -eq 0 ]]; then
+  usage
+  exit 1
+fi
 
-# Try to run assembly on every provided path.
-for dir in $*; do
-  while read manifest; do
-    yq r -P - <<<"${manifest}"
-    echo "---"
-  done <<<"$(assembly ${PWD}/${dir})"
+# Assemble output to json.
+if ! output="$(assembly ${PWD}/${1})"; then
+  cat "${ERRORS}"
+  exit 1
+fi
+
+# Convert patched json lines back to yaml.
+for line in ${output}; do
+  echo "---"
+  echo "${line}" | yq r -P -
 done
