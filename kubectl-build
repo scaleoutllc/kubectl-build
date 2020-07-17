@@ -64,7 +64,7 @@ function getConfig() {
     return 1
   fi
   # Get any vars defined (not required to be present, failures okay)
-  local vars; vars=$(echo "${rawConfig}" | jq -cr '.vars[]' 2> /dev/null)
+  local vars=$(echo "${rawConfig}" | jq -cr '.vars[]' 2> /dev/null)
   if [[ "${vars}" != "" ]]; then
     # Iterate through each variable, setting if it isn't already provided in
     # the environment.
@@ -79,9 +79,9 @@ function getConfig() {
       # environment already.
       if ! compgen -e -X "!$varName" >/dev/null; then
         local value
-        local varFromFile
         # If var is not set in environment, see if there is a value expected in
         # an external file
+        local varFromFile
         if valueFromFile=$(jq -rec '.valueFromFile' <<<"${var}"); then
           # Try to read external file and fail with useful error if it does not
           # work.
@@ -110,12 +110,11 @@ function assembly() {
   # Save path passed to this function, it is the directory relative to which
   # resources inside the config are defined.
   local root=${1}
+  local configFile=${root}/${ASSEMBLY_FILE}
   # Attempt to read the assembly file.
-  local config
-  config=$(getConfig "${root}/${ASSEMBLY_FILE}") || return 1
+  local config; config=$(getConfig "${configFile}") || return 1
   # Get any resources are targeted (not required to be present, failures okay).
-  local targets
-  targets=$(echo "${config}" | jq -cr '.resources[]' 2> /dev/null)
+  local targets=$(echo "${config}" | jq -cr '.resources[]' 2> /dev/null)
   if [[ "${targets}" != "" ]]; then
     # Actually collect all resources targetted.
     local resources
@@ -136,12 +135,11 @@ function assembly() {
 # the root directory of the paths supplied as the first argument. it outputs
 # the underlying yaml found in each of the files as json.
 function collect() {
-  local root subPath subAssembly
-  root=${1}
+  local root=${1}
   cd "${root}"
   while read item; do
-    subPath="${root}/${item}"
-    subAssembly="${item}/${ASSEMBLY_FILE}"
+    local subPath="${root}/${item}"
+    local subAssembly="${item}/${ASSEMBLY_FILE}"
     if [[ -f "${subAssembly}" ]]; then
       # If a resource points to a directory that contains an assembly file,
       # run assembly on it and collect the output. This is recursive and can
@@ -188,8 +186,7 @@ function patch() {
       return 1
     fi
     # Check the number of manifests that matched the target.
-    local matchCount
-    matchCount=$(echo "${matched}" | grep -v ^$ | wc -l | tr -d "[:space:]")
+    local matchCount=$(echo "${matched}" | grep -v ^$ | wc -l | tr -d "[:space:]")
     # A patch can only target a single manifest (currently). If none or more
     # than one are found, error and exit.
     if [[ ${matchCount} != 1 ]]; then
@@ -197,8 +194,7 @@ function patch() {
       return 1
     fi
     # Find all unmatched manifests (so they can be saved through each iteration)
-    local unmatched
-    unmatched=$(echo "${manifests}" | jq -c 'select(contains('${filter}') | not)')
+    local unmatched=$(echo "${manifests}" | jq -c 'select(contains('${filter}') | not)')
     # Overwrite the manifest listing with modifications supplied, the next
     # loop through will do the same.
     manifests="$(echo "${unmatched}" && (echo "${matched}" | jq -c ". | ${replacements}"))"
