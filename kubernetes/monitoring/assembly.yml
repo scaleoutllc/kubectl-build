@@ -10,5 +10,5 @@ patches:
     metadata:
       name: grafana
   replacements:
-  - path: metadata.test
+  - path: metadata.annotations.test
     value: ${TEST}

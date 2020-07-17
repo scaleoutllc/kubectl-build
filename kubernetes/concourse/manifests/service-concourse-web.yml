@@ -6,7 +6,6 @@ metadata:
   labels:
     app: concourse-web
 spec:
-  type: ClusterIP
   selector:
     app: concourse-web
   ports:

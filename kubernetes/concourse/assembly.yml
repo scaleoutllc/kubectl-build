@@ -1,0 +1,15 @@
+resources:
+- manifests
+generatedResources: |-
+  # only run if secret doesn't exist yet
+  kubectl get secret -n ci-secrets-main rsa > /dev/null 2>&1 || (
+    rm -rf rsa
+    mkdir -p rsa
+    ssh-keygen -b 2048 -t rsa -f rsa/key -q -N ""
+    kubectl -n ci-secrets-main create secret generic rsa \
+      --type=Opaque \
+      --from-file rsa/key \
+      --from-file rsa/key.pub \
+      --dry-run=client -o json | jq -c
+    rm -rf rsa
+  )

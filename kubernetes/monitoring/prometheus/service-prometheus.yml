@@ -6,6 +6,9 @@ metadata:
   labels:
     app: prometheus
 spec:
-  type: ClusterIP
   selector:
     app: prometheus
+  ports:
+  - protocol: TCP
+    port: 80
+    targetPort: http

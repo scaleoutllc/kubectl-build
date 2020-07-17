@@ -34,6 +34,22 @@ resources:                           # resources specify yaml files to combine
 - path/to/bare/directory             # collect all yml files within
 - path/to/assembly/directory         # when ${ASSEMBLY_FILE} in root, process it
 
+# dynamically generate resources to include
+# must produce jsonl on stdout (one resource per line)
+generatedResources: |-
+  # only generate secret if it doesn't exist in target cluster
+  kubectl get secret -n ci-secrets-main rsa > /dev/null 2>&1 || (
+    rm -rf rsa
+    mkdir -p rsa
+    ssh-keygen -b 2048 -t rsa -f rsa/key -q -N ""
+    kubectl -n ci-secrets-main create secret generic rsa \
+      --type=Opaque \
+      --from-file rsa/key \
+      --from-file rsa/key.pub \
+      --dry-run=client -o json | jq -c
+    rm -rf rsa
+  )
+
 vars:                                # vars specify variables that can be
                                      # overridden by environment variables.
 - name: CLUSTER_HOST                 # name is the variable name
@@ -41,6 +57,7 @@ vars:                                # vars specify variables that can be
   valueFromFile: path/to/file        # valueFromFile is an external file that
                                      # contains the desired value. valueFromFile
                                      # trumps value.
+
 
 patches:                             # patches specify "indirect" modifications
                                      # to resources included in this file
@@ -117,8 +134,17 @@ function assembly() {
   local targets=$(echo "${config}" | jq -cr '.resources[]' 2> /dev/null)
   if [[ "${targets}" != "" ]]; then
     # Actually collect all resources targetted.
-    local resources
-    resources=$(echo "${targets}" | collect "${root}") || return 1
+    local resources; resources=$(echo "${targets}" | collect "${root}") || return 1
+    # Add any generated resources to the output.
+    local dynamic; dynamic=$(echo "${config}" | jq -cr '.generatedResources' 2> /dev/null)
+    if [[ "${dynamic}" != "null" ]]; then
+      local generated;
+      if ! generated=$(cd ${root} && bash -ce "${dynamic}"); then
+        error "generatedResources: ${configFile}"
+        return 1
+      fi
+      resources=$(printf '%s\n%s' "${resources}" "${generated}")
+    fi
     # Get any patches (not required to be present, failures okay).
     local patches
     if patches=$(echo "${config}" | jq -cr '.patches[]' 2> /dev/null); then

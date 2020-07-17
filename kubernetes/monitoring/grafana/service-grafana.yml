@@ -6,6 +6,9 @@ metadata:
   labels:
     app: grafana
 spec:
-  type: ClusterIP
   selector:
     app: grafana
+  ports:
+  - protocol: TCP
+    port: 80
+    targetPort: http

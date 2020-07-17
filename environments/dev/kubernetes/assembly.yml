@@ -11,23 +11,23 @@ vars:
   value: set-in-dev # monitoring folder is not affected by this.
 patches:
 - target:
-    kind: HTTPProxy
+    kind: Ingress
     metadata:
       name: concourse-web
   replacements:
-  - path: spec.virtualhost.fqdn
+  - path: spec.rules[0].host
     value: concourse.${CLUSTER_HOST}
 - target:
-    kind: HTTPProxy
+    kind: Ingress
     metadata:
       name: grafana
   replacements:
-  - path: spec.virtualhost.fqdn
+  - path: spec.rules[0].host
     value: grafana.${CLUSTER_HOST}
 - target:
-    kind: HTTPProxy
+    kind: Ingress
     metadata:
       name: prometheus
   replacements:
-  - path: spec.virtualhost.fqdn
+  - path: spec.rules[0].host
     value: prometheus.${CLUSTER_HOST}

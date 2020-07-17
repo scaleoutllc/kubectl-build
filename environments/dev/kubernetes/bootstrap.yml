@@ -6,9 +6,14 @@ metadata:
 apiVersion: v1
 kind: Namespace
 metadata:
+  name: ci-secret-main
+---
+apiVersion: v1
+kind: Namespace
+metadata:
   name: master
 ---
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: contour
+  name: monitoring
